@@ -1,12 +1,10 @@
 import { OAuthProvider, AuthorizationError, CimdFetchError, insufficientScope, type OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
-import { env as cloudflareEnv } from "cloudflare:workers";
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
 
-// Owner-only, read-only MCP bridge. The Meta system-user token stays in the existing API Worker.
+// Authentication-only gateway. No Meta endpoints or advertising credentials are connected.
 const OWNER_GITHUB_ID = 359685372;
-const META_API_ORIGIN = "https://odd-hall-a184.waynecatoe3.workers.dev";
 const MCP_RESOURCE = "https://music-campaign-optimizer-mcp.waynecatoe3.workers.dev/mcp";
 
 type Identity = { githubId: number; login: string };
@@ -15,7 +13,6 @@ type GatewayEnv = Env & {
   OAUTH_PROVIDER: any;
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
-  MUSIC_API_KEY: string;
 };
 
 const escapeHtml = (value: string) =>
@@ -46,80 +43,26 @@ function consentHtml(
     </body></html>`;
 }
 
-function jsonResult(data: unknown, isError = false) {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(data) }],
-    ...(isError ? { isError: true } : {}),
-  };
-}
-
-async function metaApi(path: string, query?: URLSearchParams) {
-  const env = cloudflareEnv as unknown as GatewayEnv;
-  if (!env.MUSIC_API_KEY) return jsonResult({ error: "gateway_not_configured" }, true);
-  const url = new URL(path, META_API_ORIGIN);
-  if (query) url.search = query.toString();
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${env.MUSIC_API_KEY}`, Accept: "application/json" },
-      redirect: "manual",
-      signal: AbortSignal.timeout(15000),
-    });
-    if (response.status >= 300 && response.status < 400) {
-      return jsonResult({ error: "unexpected_upstream_redirect" }, true);
-    }
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      return jsonResult({
-        error: "meta_reporting_request_failed",
-        status: response.status,
-        code: body && typeof body === "object" && "error" in body ? body.error : "upstream_error",
-      }, true);
-    }
-    return jsonResult(body);
-  } catch {
-    return jsonResult({ error: "meta_reporting_unavailable" }, true);
-  }
-}
-
 function createServer() {
   const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.1.0" });
   const identity = getMcpAuthContext()?.props as Identity | undefined;
-
-  // Defense in depth: never register reporting tools for non-owner identities.
   if (!identity || identity.githubId !== OWNER_GITHUB_ID) return server;
 
+  // Authentication-only smoke test. No Meta URLs, tokens or reporting calls are present.
   server.registerTool(
-    "get_campaigns",
-    { description: "Read the campaigns in the Thomas Catoe Music Meta ad account.", inputSchema: z.object({}) },
-    async () => metaApi("/api/campaigns"),
-  );
-  server.registerTool(
-    "get_adsets",
-    { description: "Read ad sets, budget configuration, and targeting (read-only).", inputSchema: z.object({}) },
-    async () => metaApi("/api/adsets"),
-  );
-  server.registerTool(
-    "get_ads",
-    { description: "Read individual ads and creative identifiers (read-only).", inputSchema: z.object({}) },
-    async () => metaApi("/api/ads"),
-  );
-  server.registerTool(
-    "get_insights",
+    "get_connection_status",
     {
-      description: "Read Meta performance by campaign, ad set, ad, and optional placement breakdown. No attribution of actual streams is implied.",
-      inputSchema: z.object({
-        level: z.enum(["campaign", "adset", "ad"]).default("adset"),
-        date_preset: z.enum(["yesterday", "last_3d", "last_7d", "last_14d", "last_28d", "last_30d"]).default("last_7d"),
-        breakdown: z.enum(["none", "placement"]).default("none"),
-        after: z.string().max(512).optional(),
-      }),
+      description: "Confirms that the signed-in owner can access this authentication-only MCP gateway. Does not read advertising data.",
+      inputSchema: z.object({}),
     },
-    async ({ level, date_preset, breakdown, after }) => {
-      const query = new URLSearchParams({ level, date_preset, breakdown });
-      if (after) query.set("after", after);
-      return metaApi("/api/insights", query);
-    },
+    async () => ({
+      content: [{ type: "text" as const, text: JSON.stringify({
+        status: "authenticated",
+        mode: "auth_only",
+        meta_connected: false,
+        available_reporting_tools: 0,
+      }) }],
+    }),
   );
   return server;
 }
