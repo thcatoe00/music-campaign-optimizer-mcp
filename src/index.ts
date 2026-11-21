@@ -127,11 +127,15 @@ function createServer() {
 const mcpHandler = createMcpHandler(createServer);
 
 const apiHandler = {
-  fetch(request: Request, env: GatewayEnv, ctx: OAuthResourceContext<Identity>) {
-    if (!ctx.auth.scope.includes("mcp:read")) {
-      return insufficientScope(ctx.auth, ["mcp:read"]);
+  fetch(request: Request, env: GatewayEnv, ctx: ExecutionContext) {
+    // OAuthProvider invokes this handler only after token validation.
+    // It augments the ordinary execution context with verified auth metadata.
+    const verified = ctx as OAuthResourceContext<Identity>;
+    if (!verified.auth) return new Response("Unauthorized", { status: 401 });
+    if (!verified.auth.scope.includes("mcp:read")) {
+      return insufficientScope(verified.auth, ["mcp:read"]);
     }
-    if (ctx.props?.githubId !== OWNER_GITHUB_ID) {
+    if (verified.props?.githubId !== OWNER_GITHUB_ID) {
       return new Response("Forbidden", { status: 403 });
     }
     return mcpHandler(request, env, ctx);
