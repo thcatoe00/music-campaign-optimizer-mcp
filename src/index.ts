@@ -1,4 +1,4 @@
-import OAuthProvider, { AuthorizationError, CimdFetchError } from "@cloudflare/workers-oauth-provider";
+import { OAuthProvider, AuthorizationError, CimdFetchError, insufficientScope, type OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { env as cloudflareEnv } from "cloudflare:workers";
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
@@ -127,7 +127,13 @@ function createServer() {
 const mcpHandler = createMcpHandler(createServer);
 
 const apiHandler = {
-  fetch(request: Request, env: GatewayEnv, ctx: ExecutionContext) {
+  fetch(request: Request, env: GatewayEnv, ctx: OAuthResourceContext<Identity>) {
+    if (!ctx.auth.scope.includes("mcp:read")) {
+      return insufficientScope(ctx.auth, ["mcp:read"]);
+    }
+    if (ctx.props?.githubId !== OWNER_GITHUB_ID) {
+      return new Response("Forbidden", { status: 403 });
+    }
     return mcpHandler(request, env, ctx);
   },
 };
