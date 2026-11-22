@@ -1,7 +1,7 @@
 // Read-only, fail-closed verification of Meta's day-scoped ad-set Insights.
 // The trusted flag is set by the gateway only after authenticated REST fetch;
 // callers of this pure function cannot enable Meta spending or write actions.
-import { DESTINATIONS, asId, finiteNonNegative, outboundClicks, type Destination } from "./optimizer";
+import { DESTINATIONS, asId, finiteNonNegative, outboundClicks, type Destination } from "./optimizer.ts";
 
 export interface DailyRow {
   adset_id: string;
