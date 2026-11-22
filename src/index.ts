@@ -6,6 +6,7 @@ import { z } from "zod";
 import { analyzeLiveReport, simulateAllocation, DESTINATIONS, type Destination, type LivePage, type PlatformMap, type RawRecord } from "./optimizer";
 import { evaluateDailyEvidence, type DailyEvidence } from "./daily-safety";
 import { probeDailyRest } from "./reporting-health";
+import { preflightBudgetChange } from "./budget-guardrails";
 
 // Owner-only, read-only MCP gateway. Meta system-user token remains in the existing Meta REST Worker.
 const OWNER_GITHUB_ID = 359685372;
@@ -158,7 +159,7 @@ async function fetchDailyEvidence(days: 5 | 6 | 7): Promise<DailyFetch> {
 const emptyPage: LivePage = { data: [], has_more: false, next_cursor: null };
 
 function createServer() {
-  const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.4.0" });
+  const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.5.0" });
   const identity = getMcpAuthContext()?.props as Identity | undefined;
   // Even if the OAuth provider is misconfigured, tool registration is owner-only.
   if (!identity || identity.githubId !== OWNER_GITHUB_ID) return server;
@@ -179,7 +180,7 @@ function createServer() {
         reporting_key_configured: Boolean(configured.MUSIC_API_KEY),
         reporting_connection_verified: false,
         ...daily,
-        available_reporting_tools: 7,
+        available_reporting_tools: 8,
       });
     },
   );
@@ -333,6 +334,58 @@ function createServer() {
         daily.evidence, adset_platform_map, new Date(), true,
       ));
     },
+  );
+
+  server.registerTool(
+    "preview_budget_controls",
+    {
+      description: "Review a HYPOTHETICAL Meta campaign budget adjustment against account/campaign allowlists, flight dates, sample sizes, lifetime cap, delivery configuration, per-platform limits, stops, and currency. All input flags are illustrative and NOT independently verified. Returns a dry-run-only audit record and NEVER changes Meta budgets.",
+      inputSchema: z.object({
+        policy: z.object({
+          account_id: z.string().regex(/^\\d{1,30}$/),
+          campaign_id: z.string().regex(/^\\d{1,30}$/),
+          first_allowed_local_date: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+          last_allowed_local_date: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+          approved_daily_total_cents: z.number().int().positive().max(10000000),
+          approved_lifetime_ceiling_cents: z.number().int().positive().max(100000000),
+          exploration_floor_bps: z.number().int().min(0).max(10000),
+          platform_share_ceiling_bps: z.number().int().min(0).max(10000),
+          max_daily_change_bps: z.number().int().min(0).max(10000),
+        }),
+        snapshot: z.object({
+          account_id: z.string(), campaign_id: z.string(),
+          account_currency: z.string(), account_timezone: z.string(),
+          campaign_status: z.enum(["ACTIVE","PAUSED","OTHER"]),
+          campaign_budget_mode: z.enum(["ADSET","CAMPAIGN","UNKNOWN"]),
+          budget_sharing_enabled: z.boolean(),
+          fetched_at: z.string(),
+          daily_report_ready: z.boolean(),
+          daily_report_pagination_complete: z.boolean(),
+          reported_adset_ids_for_campaign: z.array(z.string()).max(50),
+          adsets: z.array(z.object({
+            adset_id: z.string(), platform: z.enum(DESTINATIONS),
+            campaign_id: z.string(),
+            status: z.enum(["ACTIVE","PAUSED","OTHER"]),
+            current_daily_budget_cents: z.number().int().nonnegative(),
+            meta_min_daily_budget_cents: z.number().int().nonnegative(),
+            complete_window_outbound_clicks: z.number().int().nonnegative(),
+          })).max(50),
+          campaign_spend_to_date_cents: z.number().int().nonnegative(),
+          native_campaign_spending_limit_cents: z.number().int().nonnegative().nullable(),
+          native_limit_verified_active: z.boolean(),
+        }),
+        controls: z.object({
+          manual_pause: z.boolean(), emergency_stop: z.boolean(),
+          account_api_healthy: z.boolean(), monitoring_healthy: z.boolean(),
+          previous_change_verified: z.boolean(),
+        }),
+        proposal: z.array(z.object({
+          adset_id: z.string(), daily_budget_cents: z.number().int().nonnegative(),
+        })).max(50),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (scenario) => toolText(await preflightBudgetChange(scenario)),
   );
 
   server.registerTool(
