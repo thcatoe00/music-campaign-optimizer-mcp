@@ -231,7 +231,7 @@ function createServer() {
       description: "Retrieve current read-only Meta ad set, creative and placement performance and compute provisional royalty-weighted scores. Requires explicit adset-to-service mapping and USD confirmation; never changes budgets.",
       inputSchema: z.object({
         adset_platform_map: z.array(z.object({
-          adset_id: z.string().regex(/^\\d{1,30}$/),
+          adset_id: z.string().regex(/^\d{1,30}$/),
           platform: z.enum(DESTINATIONS),
         })).max(4).default([]),
         currency_confirmed_usd: z.boolean().default(false),
@@ -275,7 +275,7 @@ function createServer() {
       inputSchema: z.object({
         days: z.union([z.literal(5), z.literal(6), z.literal(7)]).default(7),
         adset_platform_map: z.array(z.object({
-          adset_id: z.string().regex(/^\\d{1,30}$/),
+          adset_id: z.string().regex(/^\d{1,30}$/),
           platform: z.enum(DESTINATIONS),
         })).max(4).default([]),
       }),
@@ -311,7 +311,7 @@ function createServer() {
       const targetAdsets = adsets.page.data.filter((a) =>
         adset_platform_map.some((m) => m.adset_id === a.id));
       const campaignIds = targetAdsets.map((a) => a.campaign_id);
-      if (targetAdsets.length !== 4 || campaignIds.some((id) => typeof id !== "string" || !/^\\d{1,30}$/.test(id)) ||
+      if (targetAdsets.length !== 4 || campaignIds.some((id) => typeof id !== "string" || !/^\d{1,30}$/.test(id)) ||
           new Set(campaignIds).size !== 1) {
         return toolText({
           status: "blocked", reasons: ["four_adsets_must_belong_to_one_verified_campaign"],
@@ -342,10 +342,10 @@ function createServer() {
       description: "Review a HYPOTHETICAL Meta campaign budget adjustment against account/campaign allowlists, flight dates, sample sizes, lifetime cap, delivery configuration, per-platform limits, stops, and currency. All input flags are illustrative and NOT independently verified. Returns a dry-run-only audit record and NEVER changes Meta budgets.",
       inputSchema: z.object({
         policy: z.object({
-          account_id: z.string().regex(/^\\d{1,30}$/),
-          campaign_id: z.string().regex(/^\\d{1,30}$/),
-          first_allowed_local_date: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
-          last_allowed_local_date: z.string().regex(/^\\d{4}-\\d{2}-\\d{2}$/),
+          account_id: z.string().regex(/^\d{1,30}$/),
+          campaign_id: z.string().regex(/^\d{1,30}$/),
+          first_allowed_local_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          last_allowed_local_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
           approved_daily_total_cents: z.number().int().positive().max(10000000),
           approved_lifetime_ceiling_cents: z.number().int().positive().max(100000000),
           exploration_floor_bps: z.number().int().min(0).max(10000),
