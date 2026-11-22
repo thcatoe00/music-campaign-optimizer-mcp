@@ -4,6 +4,7 @@ import { env as workerEnv } from "cloudflare:workers";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
 import { analyzeLiveReport, simulateAllocation, DESTINATIONS, type Destination, type LivePage, type PlatformMap, type RawRecord } from "./optimizer";
+import { evaluateDailyEvidence, type DailyEvidence } from "./daily-safety";
 
 // Owner-only, read-only MCP gateway. Meta system-user token remains in the existing Meta REST Worker.
 const OWNER_GITHUB_ID = 359685372;
@@ -112,7 +113,9 @@ async function readAllReporting(path: "/api/adsets" | "/api/ads" | "/api/insight
     for (const record of page.data) {
       if (record && typeof record === "object" && !Array.isArray(record)) data.push(record as RawRecord);
     }
-    if (page.has_more !== true) return { ok: true, page: { data, has_more: false, next_cursor: null } };
+    if (typeof page.has_more !== "boolean" || !("next_cursor" in page))
+      return { ok: false, reason: "pagination_metadata_missing" };
+    if (page.has_more === false) return { ok: true, page: { data, has_more: false, next_cursor: null } };
     const cursor = page.next_cursor;
     if (typeof cursor !== "string" || cursor.length === 0 || cursor.length > 512 || ![...cursor].every((ch) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-+=/".includes(ch))) {
       return { ok: false, reason: "unusable_pagination_cursor" };
@@ -122,10 +125,39 @@ async function readAllReporting(path: "/api/adsets" | "/api/ads" | "/api/insight
   // Never treat a truncated paginated report as complete.
   return { ok: true, page: { data, has_more: true, next_cursor: after } };
 }
+
+type DailyFetch = { ok: true; evidence: DailyEvidence } | { ok: false; reason: string };
+async function fetchDailyEvidence(days: 5 | 6 | 7): Promise<DailyFetch> {
+  const env = workerEnv as unknown as GatewayEnv;
+  if (!env.MUSIC_API_KEY) return { ok: false, reason: "reporting_not_configured" };
+  const url = new URL("/api/daily-insights", META_REST_ORIGIN);
+  url.searchParams.set("days", String(days));
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${env.MUSIC_API_KEY}`, Accept: "application/json" },
+      redirect: "manual", signal: AbortSignal.timeout(15000),
+    });
+    if (res.status === 404 || res.status === 405)
+      return { ok: false, reason: "daily_rest_endpoint_not_deployed" };
+    if (!res.ok) return { ok: false, reason: "daily_rest_endpoint_unavailable" };
+    const body: unknown = await res.json();
+    if (!body || typeof body !== "object" || Array.isArray(body) ||
+        !("rows" in body) || !Array.isArray(body.rows) ||
+        !("account_currency" in body) || !("account_timezone" in body) ||
+        !("pagination_complete" in body)) {
+      return { ok: false, reason: "daily_rest_contract_incomplete" };
+    }
+    return { ok: true, evidence: body as DailyEvidence };
+  } catch {
+    return { ok: false, reason: "daily_rest_service_unreachable" };
+  }
+}
+
 const emptyPage: LivePage = { data: [], has_more: false, next_cursor: null };
 
 function createServer() {
-  const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.3.0" });
+  const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.4.0" });
   const identity = getMcpAuthContext()?.props as Identity | undefined;
   // Even if the OAuth provider is misconfigured, tool registration is owner-only.
   if (!identity || identity.githubId !== OWNER_GITHUB_ID) return server;
@@ -142,7 +174,7 @@ function createServer() {
       mode: "read_only",
       reporting_key_configured: Boolean((workerEnv as unknown as GatewayEnv).MUSIC_API_KEY),
       reporting_connection_verified: false,
-      available_reporting_tools: 6,
+      available_reporting_tools: 7,
     }),
   );
 
@@ -225,6 +257,58 @@ function createServer() {
       return toolText(analyzeLiveReport(
         adsets.page, adsetsInsights.page, ads.page, adsInsights.page, placements.page,
         adset_platform_map as PlatformMap[], currency_confirmed_usd, date_preset,
+      ));
+    },
+  );
+
+  server.registerTool(
+    "get_daily_reporting_readiness",
+    {
+      description: "Read-only daily-report preflight for the four music streaming adsets: checks authenticated REST daily data, account-local 5–7 day continuity, two-day reporting lag, pagination, sample volume and explicit adset mappings. Never spends or changes budgets. Reports missing backend features honestly.",
+      inputSchema: z.object({
+        days: z.union([z.literal(5), z.literal(6), z.literal(7)]).default(7),
+        adset_platform_map: z.array(z.object({
+          adset_id: z.string().regex(/^\\d{1,30}$/),
+          platform: z.enum(DESTINATIONS),
+        })).max(4).default([]),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async ({ days, adset_platform_map }) => {
+      const adsets = await readAllReporting("/api/adsets");
+      if (!adsets.ok) return toolText({ status: "blocked", reasons: [adsets.reason],
+        automatic_budget_changes_allowed: false });
+      if (!adsets.page.data.length) {
+        return toolText({
+          status: "blocked", reasons: ["no_meta_adsets_found", "daily_rest_capability_not_yet_verified"],
+          daily_rest_upgrade_required: true, automatic_budget_changes_allowed: false,
+          note: "A real Meta campaign and backend day-scoped reporting are both required before autonomous optimization.",
+        });
+      }
+      if (adset_platform_map.length !== 4) {
+        return toolText({
+          status: "blocked", reasons: ["four_verified_adset_platform_mappings_required"],
+          known_adset_ids: adsets.page.data.map((r) => r.id).filter((id) => typeof id === "string"),
+          automatic_budget_changes_allowed: false,
+        });
+      }
+      const ids = new Set(adsets.page.data.map((r) => r.id).filter((v): v is string => typeof v === "string"));
+      if (adset_platform_map.some((m) => !ids.has(m.adset_id))) {
+        return toolText({ status: "blocked", reasons: ["adset_mapping_not_found_in_meta"],
+          automatic_budget_changes_allowed: false });
+      }
+      if (adsets.page.has_more) return toolText({
+        status: "blocked", reasons: ["adset_pagination_not_complete"],
+        automatic_budget_changes_allowed: false,
+      });
+      const daily = await fetchDailyEvidence(days);
+      if (!daily.ok) return toolText({
+        status: "blocked", reasons: [daily.reason],
+        daily_rest_upgrade_required: daily.reason === "daily_rest_endpoint_not_deployed",
+        automatic_budget_changes_allowed: false,
+      });
+      return toolText(evaluateDailyEvidence(
+        daily.evidence, adset_platform_map, new Date(), true,
       ));
     },
   );
