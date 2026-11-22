@@ -114,7 +114,7 @@ async function readAllReporting(path: "/api/adsets" | "/api/ads" | "/api/insight
     }
     if (page.has_more !== true) return { ok: true, page: { data, has_more: false, next_cursor: null } };
     const cursor = page.next_cursor;
-    if (typeof cursor !== "string" || !/^[A-Za-z0-9_\\-+=/]{1,512}$/.test(cursor)) {
+    if (typeof cursor !== "string" || cursor.length === 0 || cursor.length > 512 || ![...cursor].every((ch) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-+=/".includes(ch))) {
       return { ok: false, reason: "unusable_pagination_cursor" };
     }
     after = cursor;
