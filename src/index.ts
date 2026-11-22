@@ -227,19 +227,32 @@ async function githubCallback(request: Request, env: GatewayEnv) {
   const code = new URL(request.url).searchParams.get("code");
   if (!code) return new Response("GitHub authorization was not completed.", { status: 403 });
 
+  // GitHub's web OAuth token exchange expects form-encoded parameters.
+  // Never log the authorization code, client secret, or access token.
   const response = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify({
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "music-campaign-optimizer-mcp",
+    },
+    body: new URLSearchParams({
       client_id: env.GITHUB_CLIENT_ID,
       client_secret: env.GITHUB_CLIENT_SECRET,
       code,
       redirect_uri: new URL("/callback", request.url).toString(),
-    }),
+    }).toString(),
     redirect: "manual",
   });
-  if (!response.ok) return new Response("GitHub sign-in failed.", { status: 502 });
-  const tokenBody = await response.json() as { access_token?: string };
+  if (!response.ok) {
+    console.error("GitHub OAuth token exchange returned an unsuccessful HTTP status", { status: response.status });
+    return new Response("GitHub sign-in failed.", { status: 502 });
+  }
+  const tokenBody = await response.json() as { access_token?: string; error?: string }; 
+  if (tokenBody.error) {
+    console.error("GitHub OAuth rejected the token exchange", { error: tokenBody.error });
+    return new Response("GitHub authorization was rejected.", { status: 403 });
+  }
   if (!tokenBody.access_token) return new Response("GitHub did not grant authorization.", { status: 403 });
 
   const profileResponse = await fetch("https://api.github.com/user", {
