@@ -1,11 +1,13 @@
 import { OAuthProvider, AuthorizationError, CimdFetchError, insufficientScope, type OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { McpServer } from "@modelcontextprotocol/server";
+import { env as workerEnv } from "cloudflare:workers";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
 
-// Authentication-only gateway. No Meta endpoints or advertising credentials are connected.
+// Owner-only, read-only MCP gateway. Meta system-user token remains in the existing Meta REST Worker.
 const OWNER_GITHUB_ID = 359685372;
 const MCP_RESOURCE = "https://music-campaign-optimizer-mcp.waynecatoe3.workers.dev/mcp";
+const META_REST_ORIGIN = "https://odd-hall-a184.waynecatoe3.workers.dev";
 
 type Identity = { githubId: number; login: string };
 type GatewayEnv = Env & {
@@ -13,6 +15,7 @@ type GatewayEnv = Env & {
   OAUTH_PROVIDER: any;
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
+  MUSIC_API_KEY?: string;
 };
 
 const escapeHtml = (value: string) =>
@@ -43,27 +46,111 @@ function consentHtml(
     </body></html>`;
 }
 
+
+type MetricLevel = "campaign" | "adset" | "ad";
+type DatePreset = "yesterday" | "last_3d" | "last_7d" | "last_14d" | "last_28d" | "last_30d";
+
+function toolText(data: unknown, isError = false) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data) }],
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+async function fetchReporting(path: "/api/campaigns" | "/api/adsets" | "/api/ads" | "/api/insights", params?: URLSearchParams) {
+  const env = workerEnv as unknown as GatewayEnv;
+  if (!env.MUSIC_API_KEY) {
+    return toolText({ error: "reporting_not_configured" }, true);
+  }
+  const url = new URL(path, META_REST_ORIGIN);
+  if (params) url.search = params.toString();
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${env.MUSIC_API_KEY}`,
+        Accept: "application/json",
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(15000),
+    });
+    if (response.status >= 300 && response.status < 400) {
+      return toolText({ error: "reporting_redirect_rejected" }, true);
+    }
+    if (!response.ok) {
+      // Never relay arbitrary upstream response bodies or messages.
+      return toolText({ error: "reporting_request_failed", upstream_status: response.status }, true);
+    }
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== "object" || !("data" in payload) || !Array.isArray(payload.data)) {
+      return toolText({ error: "unexpected_reporting_response" }, true);
+    }
+    return toolText(payload);
+  } catch {
+    return toolText({ error: "reporting_service_unreachable" }, true);
+  }
+}
+
 function createServer() {
-  const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.1.0" });
+  const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.2.0" });
   const identity = getMcpAuthContext()?.props as Identity | undefined;
+  // Even if the OAuth provider is misconfigured, tool registration is owner-only.
   if (!identity || identity.githubId !== OWNER_GITHUB_ID) return server;
 
-  // Authentication-only smoke test. No Meta URLs, tokens or reporting calls are present.
   server.registerTool(
     "get_connection_status",
     {
-      description: "Confirms that the signed-in owner can access this authentication-only MCP gateway. Does not read advertising data.",
+      description: "Verify the owner-only MCP gateway and whether reporting configuration is present. Does not query Meta.",
       inputSchema: z.object({}),
     },
-    async () => ({
-      content: [{ type: "text" as const, text: JSON.stringify({
-        status: "authenticated",
-        mode: "auth_only",
-        meta_connected: false,
-        available_reporting_tools: 0,
-      }) }],
+    async () => toolText({
+      status: "authenticated",
+      mode: "read_only",
+      reporting_key_configured: Boolean((workerEnv as unknown as GatewayEnv).MUSIC_API_KEY),
+      reporting_connection_verified: false,
+      available_reporting_tools: 4,
     }),
   );
+
+  server.registerTool(
+    "get_campaigns",
+    { description: "Read Meta campaigns in the Thomas Catoe Music advertising account.", inputSchema: z.object({}) },
+    async () => fetchReporting("/api/campaigns"),
+  );
+  server.registerTool(
+    "get_adsets",
+    { description: "Read Meta ad sets, budgets and targeting configurations without changing them.", inputSchema: z.object({}) },
+    async () => fetchReporting("/api/adsets"),
+  );
+  server.registerTool(
+    "get_ads",
+    { description: "Read Meta ads and creative identifiers without changing them.", inputSchema: z.object({}) },
+    async () => fetchReporting("/api/ads"),
+  );
+  server.registerTool(
+    "get_insights",
+    {
+      description: "Read Meta campaign/adset/ad metrics; optionally break down by Facebook/Instagram placement. These are not attributable music streams.",
+      inputSchema: z.object({
+        level: z.enum(["campaign", "adset", "ad"]).default("adset"),
+        date_preset: z.enum(["yesterday", "last_3d", "last_7d", "last_14d", "last_28d", "last_30d"]).default("last_7d"),
+        breakdown: z.enum(["none", "placement"]).default("none"),
+        after: z.string().min(1).max(512).regex(/^[A-Za-z0-9_\-+=/]+$/).optional(),
+      }),
+    },
+    async ({ level, date_preset, breakdown, after }: {
+      level: MetricLevel;
+      date_preset: DatePreset;
+      breakdown: "none" | "placement";
+      after?: string;
+    }) => {
+      const params = new URLSearchParams({ level, date_preset, breakdown });
+      if (after) params.set("after", after);
+      return fetchReporting("/api/insights", params);
+    },
+  );
+
   return server;
 }
 
