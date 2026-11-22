@@ -15,8 +15,9 @@
 		}
 	],
 	"secrets": {
-		"required": ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]
+		"required": ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "MUSIC_API_KEY"]
 	},
+	"previews": {},
 	"observability": {
 		"enabled": true,
 	},
