@@ -5,6 +5,7 @@ import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
 import { analyzeLiveReport, simulateAllocation, DESTINATIONS, type Destination, type LivePage, type PlatformMap, type RawRecord } from "./optimizer";
 import { evaluateDailyEvidence, type DailyEvidence } from "./daily-safety";
+import { probeDailyRest } from "./reporting-health";
 
 // Owner-only, read-only MCP gateway. Meta system-user token remains in the existing Meta REST Worker.
 const OWNER_GITHUB_ID = 359685372;
@@ -169,13 +170,18 @@ function createServer() {
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     },
-    async () => toolText({
-      status: "authenticated",
-      mode: "read_only",
-      reporting_key_configured: Boolean((workerEnv as unknown as GatewayEnv).MUSIC_API_KEY),
-      reporting_connection_verified: false,
-      available_reporting_tools: 7,
-    }),
+    async () => {
+      const configured = workerEnv as unknown as GatewayEnv;
+      const daily = await probeDailyRest(META_REST_ORIGIN, configured.MUSIC_API_KEY);
+      return toolText({
+        status: "authenticated",
+        mode: "read_only",
+        reporting_key_configured: Boolean(configured.MUSIC_API_KEY),
+        reporting_connection_verified: false,
+        ...daily,
+        available_reporting_tools: 7,
+      });
+    },
   );
 
   server.registerTool(
