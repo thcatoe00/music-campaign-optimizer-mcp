@@ -301,12 +301,28 @@ function createServer() {
         status: "blocked", reasons: ["adset_pagination_not_complete"],
         automatic_budget_changes_allowed: false,
       });
+      const targetAdsets = adsets.page.data.filter((a) =>
+        adset_platform_map.some((m) => m.adset_id === a.id));
+      const campaignIds = targetAdsets.map((a) => a.campaign_id);
+      if (targetAdsets.length !== 4 || campaignIds.some((id) => typeof id !== "string" || !/^\\d{1,30}$/.test(id)) ||
+          new Set(campaignIds).size !== 1) {
+        return toolText({
+          status: "blocked", reasons: ["four_adsets_must_belong_to_one_verified_campaign"],
+          automatic_budget_changes_allowed: false,
+        });
+      }
       const daily = await fetchDailyEvidence(days);
       if (!daily.ok) return toolText({
         status: "blocked", reasons: [daily.reason],
         daily_rest_upgrade_required: daily.reason === "daily_rest_endpoint_not_deployed",
         automatic_budget_changes_allowed: false,
       });
+      if (daily.evidence.account_id !== "4694437724123689") {
+        return toolText({
+          status: "blocked", reasons: ["daily_report_for_unexpected_ad_account"],
+          automatic_budget_changes_allowed: false,
+        });
+      }
       return toolText(evaluateDailyEvidence(
         daily.evidence, adset_platform_map, new Date(), true,
       ));
