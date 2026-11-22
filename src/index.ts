@@ -103,6 +103,7 @@ function createServer() {
     {
       description: "Verify the owner-only MCP gateway and whether reporting configuration is present. Does not query Meta.",
       inputSchema: z.object({}),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     },
     async () => toolText({
       status: "authenticated",
@@ -115,17 +116,17 @@ function createServer() {
 
   server.registerTool(
     "get_campaigns",
-    { description: "Read Meta campaigns in the Thomas Catoe Music advertising account.", inputSchema: z.object({}) },
+    { description: "Read Meta campaigns in the Thomas Catoe Music advertising account.", inputSchema: z.object({}), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true } },
     async () => fetchReporting("/api/campaigns"),
   );
   server.registerTool(
     "get_adsets",
-    { description: "Read Meta ad sets, budgets and targeting configurations without changing them.", inputSchema: z.object({}) },
+    { description: "Read Meta ad sets, budgets and targeting configurations without changing them.", inputSchema: z.object({}), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true } },
     async () => fetchReporting("/api/adsets"),
   );
   server.registerTool(
     "get_ads",
-    { description: "Read Meta ads and creative identifiers without changing them.", inputSchema: z.object({}) },
+    { description: "Read Meta ads and creative identifiers without changing them.", inputSchema: z.object({}), annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true } },
     async () => fetchReporting("/api/ads"),
   );
   server.registerTool(
@@ -138,6 +139,7 @@ function createServer() {
         breakdown: z.enum(["none", "placement"]).default("none"),
         after: z.string().min(1).max(512).regex(/^[A-Za-z0-9_\-+=/]+$/).optional(),
       }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     },
     async ({ level, date_preset, breakdown, after }: {
       level: MetricLevel;
