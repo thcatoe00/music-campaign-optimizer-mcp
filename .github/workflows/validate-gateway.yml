@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "src/**"
+      - "rest-worker/**"
       - "tests/**"
       - "package.json"
       - "wrangler.jsonc"
@@ -28,5 +29,9 @@ jobs:
         run: npm run type-check
       - name: Run optimizer safety tests
         run: npm test
+      - name: Validate Meta REST Worker source
+        run: node --test rest-worker/test/*.test.mjs
+      - name: Bundle REST Worker without deploying
+        run: npx wrangler deploy --dry-run --config rest-worker/wrangler.jsonc --outdir /tmp/meta-rest-compiled
       - name: Bundle Worker without deploying
         run: npx wrangler deploy --dry-run --outdir /tmp/music-mcp-compiled
