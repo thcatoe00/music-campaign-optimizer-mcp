@@ -2,7 +2,7 @@
 // This module is not yet connected to odd-hall-a184: do not claim that it is.
 // It uses only GET requests and never has an MCP OAuth or budget-write role.
 
-import { requiredDailyWindow, type DailyEvidence, type DailyRow } from "./daily-safety";
+import { requiredDailyWindow, type DailyEvidence, type DailyRow } from "./daily-safety.ts";
 
 export type MetaGetter = (url: string, init: RequestInit) => Promise<Response>;
 export interface MetaDailyCredentials {
