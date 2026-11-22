@@ -68,6 +68,16 @@ function localDate(now: Date, timezone: string): string | null {
   }
 }
 
+// Shared account-local reporting window contract used by the REST collector.
+export function requiredDailyWindow(
+  now: Date, timezone: string, days: 5 | 6 | 7,
+): { since: string; until: string; days: number; reporting_lag_days: 2 } | null {
+  const today = localDate(now, timezone);
+  if (!today || ![5, 6, 7].includes(days)) return null;
+  const until = shiftDate(today, -2);
+  return { since: shiftDate(until, 1 - days), until, days, reporting_lag_days: 2 };
+}
+
 export function evaluateDailyEvidence(
   report: DailyEvidence,
   mapping: DailyMap[],
