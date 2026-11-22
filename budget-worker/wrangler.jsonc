@@ -1,0 +1,10 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "music-campaign-budget-control",
+  "main": "./index.js",
+  "compatibility_date": "2026-11-21",
+  "keep_vars": true,
+  "observability": {
+    "enabled": true
+  }
+}
