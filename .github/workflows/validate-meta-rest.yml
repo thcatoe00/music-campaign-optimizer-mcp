@@ -1,0 +1,24 @@
+name: Validate Meta REST Worker
+on:
+  pull_request:
+    paths:
+      - "rest-worker/**"
+      - ".github/workflows/validate-meta-rest.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install existing gateway dependencies
+        run: npm install --no-audit --no-fund
+      - name: Test read-only REST Worker
+        run: node --test rest-worker/test/*.test.mjs
+      - name: Bundle REST Worker without deploying
+        run: npx wrangler deploy --dry-run --config rest-worker/wrangler.jsonc --outdir /tmp/meta-rest-worker
