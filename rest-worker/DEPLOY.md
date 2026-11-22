@@ -10,7 +10,7 @@ This source is for the **existing** Cloudflare Worker `odd-hall-a184`, not the o
 2. Choose GitHub and the existing repository `thcatoe00/music-campaign-optimizer-mcp`.
 3. Use production branch `main` and set **Root directory** to `rest-worker` (not repository root). Ensure the worker name is `odd-hall-a184`.
 4. Deploy command from that directory: `npx wrangler deploy`. A `rest-worker/package.json` and `rest-worker/wrangler.jsonc` are provided.
-5. Preserve the existing Worker bindings in Cloudflare: `MUSIC_API_KEY` and `META_ACCESS_TOKEN` as secrets, `META_AD_ACCOUNT_ID` as variable. Never paste secrets into GitHub.
+5. Preserve the existing Worker bindings in Cloudflare: `MUSIC_API_KEY` and `META_ACCESS_TOKEN` as secrets, `META_AD_ACCOUNT_ID` as variable. The provided Wrangler config sets `keep_vars: true` to retain dashboard variables on deploy. Never paste secrets into GitHub.
 6. Verify the production build and confirm that original `/api/campaigns`, `/api/adsets`, `/api/ads`, and `/api/insights` remain functional via the MCP gateway. Unauthenticated `GET /api/daily-insights?days=7` must return 401.
 7. When a real campaign is created, owner-only MCP `get_daily_reporting_readiness` validates complete day-by-day rows and account identity.
 
