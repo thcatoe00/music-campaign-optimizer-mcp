@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { env as workerEnv } from "cloudflare:workers";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
+import { analyzeLiveReport, simulateAllocation, DESTINATIONS, type Destination, type LivePage, type PlatformMap, type RawRecord } from "./optimizer";
 
 // Owner-only, read-only MCP gateway. Meta system-user token remains in the existing Meta REST Worker.
 const OWNER_GITHUB_ID = 359685372;
@@ -92,8 +93,39 @@ async function fetchReporting(path: "/api/campaigns" | "/api/adsets" | "/api/ads
   }
 }
 
+
+type ReadPageResult = { ok: true; page: LivePage } | { ok: false; reason: string };
+async function readAllReporting(path: "/api/adsets" | "/api/ads" | "/api/insights", input: URLSearchParams = new URLSearchParams()): Promise<ReadPageResult> {
+  const data: RawRecord[] = [];
+  let after: string | null = null;
+  for (let pages = 0; pages < 10; pages++) {
+    const params = new URLSearchParams(input);
+    if (after) params.set("after", after);
+    const raw = await fetchReporting(path, params);
+    let payload: unknown;
+    try { payload = JSON.parse(raw.content[0].text); }
+    catch { return { ok: false, reason: "unexpected_gateway_response" }; }
+    if ("isError" in raw && raw.isError) return { ok: false, reason: "upstream_reporting_failure" };
+    if (!payload || typeof payload !== "object" || !("data" in payload) ||
+        !Array.isArray(payload.data)) return { ok: false, reason: "unrecognized_meta_response" };
+    const page = payload as { data: unknown[]; has_more?: unknown; next_cursor?: unknown };
+    for (const record of page.data) {
+      if (record && typeof record === "object" && !Array.isArray(record)) data.push(record as RawRecord);
+    }
+    if (page.has_more !== true) return { ok: true, page: { data, has_more: false, next_cursor: null } };
+    const cursor = page.next_cursor;
+    if (typeof cursor !== "string" || !/^[A-Za-z0-9_\\-+=/]{1,512}$/.test(cursor)) {
+      return { ok: false, reason: "unusable_pagination_cursor" };
+    }
+    after = cursor;
+  }
+  // Never treat a truncated paginated report as complete.
+  return { ok: true, page: { data, has_more: true, next_cursor: after } };
+}
+const emptyPage: LivePage = { data: [], has_more: false, next_cursor: null };
+
 function createServer() {
-  const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.2.0" });
+  const server = new McpServer({ name: "Music Campaign Optimizer", version: "0.3.0" });
   const identity = getMcpAuthContext()?.props as Identity | undefined;
   // Even if the OAuth provider is misconfigured, tool registration is owner-only.
   if (!identity || identity.githubId !== OWNER_GITHUB_ID) return server;
@@ -110,7 +142,7 @@ function createServer() {
       mode: "read_only",
       reporting_key_configured: Boolean((workerEnv as unknown as GatewayEnv).MUSIC_API_KEY),
       reporting_connection_verified: false,
-      available_reporting_tools: 4,
+      available_reporting_tools: 6,
     }),
   );
 
@@ -151,6 +183,73 @@ function createServer() {
       if (after) params.set("after", after);
       return fetchReporting("/api/insights", params);
     },
+  );
+
+
+  server.registerTool(
+    "analyze_live_efficiency",
+    {
+      description: "Retrieve current read-only Meta ad set, creative and placement performance and compute provisional royalty-weighted scores. Requires explicit adset-to-service mapping and USD confirmation; never changes budgets.",
+      inputSchema: z.object({
+        adset_platform_map: z.array(z.object({
+          adset_id: z.string().regex(/^\\d{1,30}$/),
+          platform: z.enum(DESTINATIONS),
+        })).max(4).default([]),
+        currency_confirmed_usd: z.boolean().default(false),
+        date_preset: z.enum(["last_7d", "last_14d", "last_30d"]).default("last_7d"),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async ({ adset_platform_map, currency_confirmed_usd, date_preset }) => {
+      const adsets = await readAllReporting("/api/adsets");
+      if (!adsets.ok) return toolText({ status: "source_unavailable", code: adsets.reason }, true);
+      if (!adsets.page.data.length || !adset_platform_map.length) {
+        return toolText(analyzeLiveReport(
+          adsets.page, emptyPage, emptyPage, emptyPage, emptyPage,
+          adset_platform_map as PlatformMap[], currency_confirmed_usd, date_preset,
+        ));
+      }
+      const query = (level: "adset" | "ad", breakdown: "none" | "placement") =>
+        new URLSearchParams({ level, breakdown, date_preset });
+      const [ads, adsetsInsights, adsInsights, placements] = await Promise.all([
+        readAllReporting("/api/ads"),
+        readAllReporting("/api/insights", query("adset", "none")),
+        readAllReporting("/api/insights", query("ad", "none")),
+        readAllReporting("/api/insights", query("ad", "placement")),
+      ]);
+      const responses = [ads, adsetsInsights, adsInsights, placements];
+      const error = responses.find((r) => !r.ok);
+      if (error && !error.ok) return toolText({ status: "source_unavailable", code: error.reason }, true);
+      if (!ads.ok || !adsetsInsights.ok || !adsInsights.ok || !placements.ok)
+        return toolText({ status: "source_unavailable" }, true);
+      return toolText(analyzeLiveReport(
+        adsets.page, adsetsInsights.page, ads.page, adsInsights.page, placements.page,
+        adset_platform_map as PlatformMap[], currency_confirmed_usd, date_preset,
+      ));
+    },
+  );
+
+  server.registerTool(
+    "simulate_budget_allocation",
+    {
+      description: "What-if only: propose daily ad-set budgets using royalty-weighted outbound CPC scores, 5–7 complete-day/30-click gates, exploration floors, 50% share caps, Meta minimum budgets, and ±20% change limits. Does not make Meta changes.",
+      inputSchema: z.object({
+        proposed_total_daily_budget_usd: z.number().positive().max(100000),
+        confirmed_usd_currency: z.boolean(),
+        observed_complete_days: z.number().int().min(0).max(31),
+        data_complete_and_unpaginated: z.boolean(),
+        measurements: z.array(z.object({
+          platform: z.enum(DESTINATIONS),
+          spend_usd: z.number().nonnegative().max(1000000),
+          outbound_clicks: z.number().int().nonnegative().max(100000000),
+          current_daily_budget_usd: z.number().positive().max(100000),
+          minimum_daily_budget_usd: z.number().nonnegative().max(100000),
+          royalty_per_1000_usd: z.number().positive().max(1000).optional(),
+        })).length(4),
+      }),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (args) => toolText(simulateAllocation(args)),
   );
 
   return server;
