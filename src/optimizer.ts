@@ -286,6 +286,31 @@ export function analyzeLiveReport(
   if (!completePagination) notices.push("At least one response is paginated; this report must not be used for allocation decisions.");
   if (!currencyConfirmedUSD) notices.push("Account currency has not been verified as USD; royalty-weighted scores are withheld.");
   if (invalidMetrics) notices.push("Some Meta outbound_clicks actions are missing/ambiguous. Do not substitute all link clicks.");
+  const shortlist = (rows: Ranked[]) => DESTINATIONS.map((platform) => {
+    const source = rows.filter((row) => row.platform === platform);
+    const supported = source.filter((row) =>
+      (row.outbound_clicks ?? 0) >= 30 && row.royalty_weighted_proxy_index !== null);
+    supported.sort((a,b) => (b.royalty_weighted_proxy_index ?? 0) - (a.royalty_weighted_proxy_index ?? 0));
+    const winner = supported[0];
+    return {
+      platform, status: winner ? "provisional_rank_only" : "insufficient_sample_or_metrics",
+      compared_candidates: supported.length, total_candidates: source.length,
+      highest_proxy_candidate: winner ? {
+        id: winner.id, name: winner.name, placement: winner.placement,
+        outbound_clicks: winner.outbound_clicks,
+        outbound_cpc_account_currency: winner.outbound_cpc_account_currency,
+        royalty_weighted_proxy_index: winner.royalty_weighted_proxy_index,
+      } : null,
+    };
+  });
+  const qualifiedPlatforms = accountRows.filter((row) =>
+    (row.outbound_clicks ?? 0) >= 30 && row.royalty_weighted_proxy_index !== null);
+  const uniqueQualified = new Set(qualifiedPlatforms.map((row) => row.platform));
+  const platformOrder = qualifiedPlatforms.length === 4 && uniqueQualified.size === 4
+    ? [...qualifiedPlatforms].sort((a,b) => (b.royalty_weighted_proxy_index ?? 0) - (a.royalty_weighted_proxy_index ?? 0))
+      .map((r) => ({ platform: r.platform, royalty_weighted_proxy_index: r.royalty_weighted_proxy_index }))
+    : [];
+  const comparisonsUsable = completePagination && !mapErrors.length && !invalidMetrics && currencyConfirmedUSD;
   return {
     status, analysis_period: period,
     currency_confirmed_usd: currencyConfirmedUSD,
@@ -297,6 +322,13 @@ export function analyzeLiveReport(
     platforms: accountRows,
     creatives: creativeRows,
     placements: placementRows,
+    directional_comparisons: {
+      status: comparisonsUsable ? "exploratory_only" : "not_ready",
+      platform_ranking: comparisonsUsable ? platformOrder : [],
+      best_supported_creative_by_platform: comparisonsUsable ? shortlist(creativeRows) : [],
+      best_supported_placement_by_platform: comparisonsUsable ? shortlist(placementRows) : [],
+      caveat: "Top proxy scores are not causal winners, stream-attributed returns, or instructions to alter Meta delivery.",
+    },
     comparison_guidance: "Compare only like-for-like supported rows after sufficient outbound clicks; current report does not authorize allocations.",
     budget_changes_applied: false, notices,
   };
