@@ -85,3 +85,37 @@ test("live report parses structured outbound clicks and flags partial pagination
   assert.equal(r.platforms[0].royalty_weighted_proxy_index,14.7);
   assert.equal(r.data_pagination_complete,false);
 });
+
+
+test("creative and placement rankings only use mapped and sufficiently sampled rows", () => {
+  const ids=["101","102","103","104"];
+  const destinations=["Spotify","YouTube Music","Amazon Music","Apple Music"];
+  const page=(data)=>({data,has_more:false,next_cursor:null});
+  const adsets=page(ids.map((id,i)=>({id,name:destinations[i],targeting:{},daily_budget:"500"})));
+  const adsetsInsights=page(ids.map((id,i)=>({
+    adset_id:id,adset_name:destinations[i],spend:"15",
+    outbound_clicks:[{action_type:"outbound_click",value:"40"}],
+  })));
+  const ads=page([
+    {id:"201",adset_id:"101",name:"Song A"},
+    {id:"202",adset_id:"101",name:"Song B"},
+  ]);
+  const adInsights=page([
+    {ad_id:"201",adset_id:"101",ad_name:"Song A",spend:"3",outbound_clicks:[{action_type:"outbound_click",value:"40"}]},
+    {ad_id:"202",adset_id:"101",ad_name:"Song B",spend:"10",outbound_clicks:[{action_type:"outbound_click",value:"3"}]},
+  ]);
+  const placements=page([
+    {ad_id:"201",adset_id:"101",publisher_platform:"instagram",platform_position:"reels",spend:"3",outbound_clicks:[{action_type:"outbound_click",value:"40"}]},
+  ]);
+  const map=ids.map((id,i)=>({adset_id:id,platform:destinations[i]}));
+  const r=analyzeLiveReport(adsets,adsetsInsights,ads,adInsights,placements,map,true,"last_7d");
+  assert.equal(r.status,"diagnostic_only");
+  assert.equal(r.directional_comparisons.status,"exploratory_only");
+  assert.equal(r.directional_comparisons.platform_ranking.length,4);
+  const creative=r.directional_comparisons.best_supported_creative_by_platform[0];
+  assert.equal(creative.highest_proxy_candidate.id,"201");
+  assert.equal(creative.compared_candidates,1);
+  const placement=r.directional_comparisons.best_supported_placement_by_platform[0];
+  assert.equal(placement.highest_proxy_candidate.placement,"instagram / reels");
+  assert.equal(r.budget_changes_applied,false);
+});
