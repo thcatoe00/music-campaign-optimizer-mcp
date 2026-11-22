@@ -30,7 +30,7 @@ test("four-platform scenario respects total, cents, exploration, 50% cap and 20%
   for (const row of r.platforms) {
     assert.ok(row.simulated_daily_budget_usd >= 8 && row.simulated_daily_budget_usd <= 12, JSON.stringify(row));
     assert.ok(Math.abs(row.simulated_change_percent) <= 20);
-    assert.equal(Math.round(row.simulated_daily_budget_usd * 100), row.simulated_daily_budget_usd * 100);
+    assert.ok(Math.abs(Math.round(row.simulated_daily_budget_usd * 100) - row.simulated_daily_budget_usd * 100) < 1e-6);
   }
   const yt = r.platforms.find(x => x.platform === "YouTube Music");
   const sp = r.platforms.find(x => x.platform === "Spotify");
